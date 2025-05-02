@@ -3,8 +3,11 @@ package receivers
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
+
+	gomail "gopkg.in/mail.v2"
 
 	"github.com/stretchr/testify/require"
 )
@@ -231,4 +234,76 @@ func TestBuildEmail(t *testing.T) {
 	str := buf.String()
 	require.Contains(t, str, mCfg.Body["text/plain"])
 	require.Contains(t, str, mCfg.Body["text/html"])
+}
+
+type mockSender struct {
+	sentTo [][]string
+}
+
+func (m *mockSender) Send(_ string, to []string, _ io.WriterTo) error {
+	m.sentTo = append(m.sentTo, to)
+	return nil
+}
+func (m *mockSender) Close() error { return nil }
+
+func TestSend(t *testing.T) {
+	tests := []struct {
+		name         string
+		message      *Message
+		expectedSent [][]string
+		expectedErr  bool
+	}{
+		{
+			name:    "SingleEmail=true",
+			message: makeMsg(true, "a@b.com", "c@d.com"),
+			expectedSent: [][]string{
+				{"a@b.com", "c@d.com"},
+			},
+			expectedErr: false,
+		},
+		{
+			name:    "SingleEmail=false",
+			message: makeMsg(false, "a@b.com", "c@d.com", "e@f.com"),
+			expectedSent: [][]string{
+				{"a@b.com"},
+				{"c@d.com"},
+				{"e@f.com"},
+			},
+			expectedErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ms := &mockSender{}
+
+			ds := &defaultEmailSender{
+				cfg:  EmailSenderConfig{},
+				tmpl: nil,
+				dialFn: func(_ *defaultEmailSender) (gomail.SendCloser, error) {
+					return ms, nil
+				},
+			}
+
+			sentCount, err := ds.Send(tc.message)
+			require.Equal(t, len(tc.expectedSent), sentCount)
+
+			if tc.expectedErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.ElementsMatch(t, tc.expectedSent, ms.sentTo)
+		})
+	}
+}
+
+func makeMsg(single bool, addrs ...string) *Message {
+	return &Message{
+		SingleEmail: single,
+		To:          addrs,
+		From:        "noreply@grafana.com",
+		Subject:     "Subject",
+		Body:        map[string]string{"text/plain": "body"},
+	}
 }
